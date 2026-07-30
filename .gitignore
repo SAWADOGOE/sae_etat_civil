@@ -1,0 +1,16 @@
+# Dépendances et build
+node_modules/
+dist/
+coverage/
+
+# Secrets — JAMAIS de credentials versionnés (voir CLAUDE.md, section « Aucun secret versionné »)
+.env
+.env.*
+!.env.example
+
+# Clone local en lecture seule du dépôt legacy (convention CLAUDE.md, section « Le dépôt legacy »)
+legacy/
+
+# Divers
+*.log
+.DS_Store

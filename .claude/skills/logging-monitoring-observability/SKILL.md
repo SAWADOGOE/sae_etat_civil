@@ -1,9 +1,9 @@
 ---
 name: logging-monitoring-observability
-description: Configure les logs structures (Pino), les metriques Prometheus, le tracage OpenTelemetry et les health checks pour ce backend Express. Utiliser des qu'on ajoute du logging, un endpoint /health ou /metrics, du monitoring, de la gestion d'erreurs observable, ou qu'on discute d'incidents ou de debogage en production.
+description: Configure les logs structures (Pino avec redaction des donnees sensibles), les metriques Prometheus, le tracage OpenTelemetry et les health checks pour ce backend Express. Utiliser des qu'on ajoute du logging, un endpoint /health ou /metrics, du monitoring, de la gestion d'erreurs observable, ou qu'on discute d'incidents, de performance ou de debogage en production.
 metadata:
   author: sae-backend
-  version: 1.0.0
+  version: 1.1.0
   category: observability
 ---
 
@@ -11,7 +11,7 @@ metadata:
 
 ## Point de départ : il n'y a rien aujourd'hui
 
-Le code actuel s'appuie uniquement sur `console.log`/`console.error`, parfois avec des emojis (`✓`, `🔄`), sans structure, sans niveau, sans corrélation entre les lignes d'une même requête. Il n'y a ni `/health`, ni métriques, ni traçage. Ce skill part de zéro, pas d'un existant à porter — c'est une des vraies plus-values de la réécriture.
+Le code legacy s'appuie uniquement sur `console.log`/`console.error`, parfois avec des emojis (`✓`, `🔄`), sans structure, sans niveau, sans corrélation entre les lignes d'une même requête. Il n'y a ni `/health`, ni métriques, ni traçage. Cette skill part de zéro, pas d'un existant à porter — c'est une des vraies plus-values de la réécriture.
 
 ## Logs structurés (Pino)
 
@@ -24,7 +24,7 @@ export const logger = pino({
 });
 ```
 
-- **Redaction obligatoire** des champs sensibles ou volumineux : mots de passe, tokens, et surtout **les blobs base64 d'images** — le code actuel logue déjà des tailles (`Taille: X KB → Y KB`) ce qui est utile et à conserver, mais ne jamais logger le contenu base64 lui-même (ça a explosé la taille des logs plus d'une fois dans ce genre d'app).
+- **Redaction obligatoire** des champs sensibles ou volumineux : mots de passe, tokens, et surtout **les blobs base64 d'images** — le code legacy logue des tailles (`Taille: X KB → Y KB`), ce qui est utile et à conserver, mais ne jamais logger le contenu base64 lui-même (ça a explosé la taille des logs plus d'une fois dans ce genre d'app). La redaction participe aussi à la conformité données personnelles (voir skill `auth-rbac-security`) : pas de données d'état civil en clair dans les logs techniques.
 - `pino-http` comme middleware Express pour logger automatiquement chaque requête (méthode, chemin, statut, durée) avec un `req.id` corrélé.
 - Niveaux : `error` pour les échecs métier/infra, `warn` pour les cas dégradés mais gérés (ex. cache Redis indisponible, bascule en lecture directe base), `info` pour les événements métier notables (acte validé, import CSV terminé), `debug` pour le détail de dev.
 
@@ -40,7 +40,7 @@ app.use((req, res, next) => {
 });
 ```
 
-Chaque service/controller utilise `req.log` (ou le logger propagé via `AsyncLocalStorage` si vous préférez éviter de faire transiter `req` jusqu'au service) plutôt que `console.log` — objectif : pouvoir filtrer tous les logs d'une requête précise en production quand un utilisateur signale un problème.
+Chaque service/controller utilise `req.log` (ou le logger propagé via `AsyncLocalStorage` si vous préférez éviter de faire transiter `req` jusqu'au service) plutôt que `console.log` — objectif : pouvoir filtrer tous les logs d'une requête précise en production quand un utilisateur signale un problème. Ce `requestId` est le même que celui renvoyé dans l'enveloppe d'erreur (skill `api-conventions-and-validation`) et enregistré dans le journal d'audit (skill `auth-rbac-security`).
 
 ## Métriques Prometheus
 
@@ -76,7 +76,7 @@ GET /health/live    → 200 si le process tourne (pas de dépendance externe vé
 GET /health/ready    → 200 seulement si Postgres (Prisma), Redis et MinIO répondent
 ```
 
-`/health/live` sert au restart automatique du conteneur (liveness probe), `/health/ready` sert à ne recevoir du trafic qu'une fois les dépendances up (readiness probe) — ne fusionnez pas les deux, un Postgres momentanément indisponible ne doit pas provoquer un restart en boucle du conteneur applicatif, seulement le retirer temporairement du load balancing.
+`/health/live` sert au restart automatique du conteneur (liveness probe), `/health/ready` sert à ne recevoir du trafic qu'une fois les dépendances up (readiness probe) — ne fusionnez pas les deux : un Postgres momentanément indisponible ne doit pas provoquer un restart en boucle du conteneur applicatif, seulement le retirer temporairement du load balancing.
 
 ## Traçage (optionnel, à activer si la complexité le justifie)
 
@@ -84,4 +84,4 @@ OpenTelemetry SDK pour instrumenter Express + Prisma + `ioredis` automatiquement
 
 ## Infra Docker
 
-Étendre `docker-compose.yml` (pattern existant : un service par dépendance, healthcheck, réseau `mynetwork` partagé) avec, a minima, `prometheus` scrapant `backend:PORT/metrics`. `grafana` est optionnel en local (dashboards utiles surtout en environnement partagé/prod) ; en alternative, un service hébergé (Grafana Cloud) évite de maintenir cette brique soi-même. Sentry (ou équivalent) reste une option complémentaire pour l'agrégation d'erreurs côté produit si le volume d'incidents le justifie — pas un prérequis du MVP d'observabilité.
+Le `docker-compose.yml` de **ce** dépôt (voir skill `express-backend-architecture` — on n'étend pas le compose du legacy, dépôts séparés) peut accueillir, a minima, un service `prometheus` scrapant `backend:4000/metrics`. `grafana` est optionnel en local (dashboards utiles surtout en environnement partagé/prod) ; en alternative, un service hébergé (Grafana Cloud) évite de maintenir cette brique soi-même. Sentry (ou équivalent) reste une option complémentaire pour l'agrégation d'erreurs côté produit si le volume d'incidents le justifie — pas un prérequis du MVP d'observabilité.

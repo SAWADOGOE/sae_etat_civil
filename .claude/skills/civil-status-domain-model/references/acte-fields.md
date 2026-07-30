@@ -1,10 +1,18 @@
 # Inventaire complet des champs `Acte`
 
-Source : `../../prisma/schema.prisma` (modèle `Acte`). Regroupé par usage pour servir de base à des DTO Zod, des `select` Prisma ciblés, ou un mapping CSV import/export. Ne pas ajouter de champ ici sans l'ajouter d'abord dans le schéma Prisma partagé.
+Source : `prisma/schema.prisma` de ce dépôt, modèle `Acte` (tant que l'import du schéma n'a pas eu lieu : `legacy:prisma/schema.prisma`). Inventaire **vérifié exhaustif par script** contre le schéma : les 110 champs scalaires du modèle sont tous listés ci-dessous. Regroupé par usage pour servir de base à des DTO Zod, des `select` Prisma ciblés, ou un mapping CSV import/export. Ne pas ajouter de champ ici sans l'ajouter d'abord dans le schéma Prisma (par migration — voir gouvernance dans `CLAUDE.md`).
 
 ## Identité / méta (tous types d'actes)
 
-`id` (cuid), `numero_acte`, `acte_numerisee` (image — candidate MinIO, voir [[minio-file-storage]]), `extractedText` (texte libre associé à l'acte — l'extraction OCR qui l'alimentait est hors périmètre de cette version, voir `../../../CLAUDE.md`), `type_acte` (`oui`/`non`, jugement supplétif), `declaration_jugement`, `date_etablissement`, `officier`, `mention`, `completed`, `message`, `status`, `article`, `createdAt`, `updatedAt`, `registreId`, `userId`, `validatedById`, `validated`.
+`id` (cuid), `numero_acte`, `acte_numerisee` (image — candidate MinIO, voir skill `minio-file-storage`), `extractedText` (texte libre associé à l'acte — l'extraction OCR qui l'alimentait est hors périmètre de cette version, voir `CLAUDE.md`), `type_acte` (`oui`/`non`, jugement supplétif), `declaration_jugement`, `date_etablissement`, `officier`, `mention`, `completed`, `message`, `status`, `article`, `createdAt`, `updatedAt`, `registreId`, `userId`, `validatedById`, `validated`.
+
+## Relations (non scalaires — pour les `include` Prisma)
+
+- `registre` → `Registre` (via `registreId`) : porte le `type_registre` qui décide de l'interprétation des champs, et la commune parente.
+- `user` → `User` (relation `ActeOwner`, via `userId`) : l'agent créateur.
+- `validatedBy` → `User` (relation `ValidatedBy`, via `validatedById`) : l'admin validateur.
+
+Ne confondez pas les deux relations vers `User` dans les statistiques par utilisateur.
 
 ## Jugement supplétif
 
@@ -12,7 +20,7 @@ Source : `../../prisma/schema.prisma` (modèle `Acte`). Regroupé par usage pour
 
 ## Identifiant IUCEC
 
-`identifiant_unique`, `code_ecc`, `annee_identifiant`, `numero_ordre`, `cle_controle`, `identifiant_attribue_le` — voir [[iucec-identifiant-service]], ne jamais peupler manuellement.
+`identifiant_unique`, `code_ecc`, `annee_identifiant`, `numero_ordre`, `cle_controle`, `identifiant_attribue_le` — voir skill `iucec-identifiant-service`, ne jamais peupler manuellement.
 
 ## Naissance : enfant (partagés avec décès/défunt — voir plus bas)
 
@@ -74,7 +82,11 @@ Réutilise `prenom`, `nom`, `date_naissance`, `sexe`, `lieu_naissance` (identit�
 - `TypeActe`: `oui | non`
 - `RegistreType` / `ActeType` (redondants dans le schéma actuel) : `NAISSANCE | MARIAGE | DECES`
 
+## Rappel transverse : dates métier
+
+Toutes les colonnes `date_*` ci-dessus (hors `identifiant_attribue_le`, `createdAt`, `updatedAt`) sont des **`String`** au format conditionné par `article` — voir la section « Les dates métier sont des `String` » de la skill. Ne les typez jamais en `Date`/`DateTime` dans les DTO.
+
 ## Conseil pour les DTO Zod côté Express
 
-Découpez en sous-schémas Zod réutilisables plutôt qu'un unique schéma de 150 champs :
-`acteCommunSchema`, `acteNaissanceSchema` (étend commun + père/mère), `acteDecesSchema` (étend commun + déclarant), `acteMariageSchema` (composé de 8 blocs identité répétés : `personneSchema` paramétrable). Sélectionnez le bon sous-schéma selon `registre.type_registre`, exactement comme le fait la contrainte métier — ne validez pas les ~150 champs comme s'ils étaient tous obligatoires en même temps.
+Découpez en sous-schémas Zod réutilisables plutôt qu'un unique schéma de 110+ champs :
+`acteCommunSchema`, `acteNaissanceSchema` (étend commun + père/mère), `acteDecesSchema` (étend commun + déclarant), `acteMariageSchema` (composé de 8 blocs identité répétés : `personneSchema` paramétrable). Sélectionnez le bon sous-schéma selon `registre.type_registre`, exactement comme le fait la contrainte métier — ne validez pas tous les champs comme s'ils étaient obligatoires en même temps.

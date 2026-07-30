@@ -1,15 +1,15 @@
 ---
 name: redis-caching-and-queues
-description: Patterns Redis pour ce backend, cache-aside pour les donnees de reference (region/province/commune/officier) et les statistiques, files d'attente BullMQ pour l'import CSV et la compression d'image en tache de fond, et ce qu'il ne faut jamais mettre en cache (le compteur IdentifiantSequence). Utiliser pour toute tache de cache, performance, job asynchrone ou limitation de debit.
+description: Patterns Redis pour ce backend, cache-aside pour les donnees de reference (region/province/commune/officier) et les statistiques, files d'attente BullMQ pour l'import CSV et la compression d'image en tache de fond, et ce qu'il ne faut jamais mettre en cache (le compteur IdentifiantSequence). Utiliser pour toute tache de cache, performance de lecture, job asynchrone, import en masse ou limitation de debit.
 metadata:
   author: sae-backend
-  version: 1.0.0
+  version: 1.1.0
   category: infrastructure
 ---
 
 # Redis — cache et files d'attente
 
-Redis a deux usages distincts dans ce backend. Ne les mélangez pas dans la même instance de client sans le documenter : le cache tolère la perte de données (c'est un raccourci vers Postgres), les files d'attente BullMQ non (un job perdu = un import qui ne se termine jamais). En développement une seule instance Redis suffit ; en production, envisagez deux `db` logiques (`REDIS_URL` avec `/0` pour le cache, `/1` pour BullMQ) ou deux instances si le volume le justifie.
+Redis a deux usages distincts dans ce backend. Ne les mélangez pas dans la même instance de client sans le documenter : le cache tolère la perte de données (c'est un raccourci vers Postgres), les files d'attente BullMQ non (un job perdu = un import qui ne se termine jamais). En développement une seule instance Redis suffit (celle du `docker-compose.yml` de ce dépôt — voir skill `express-backend-architecture`) ; en production, envisagez deux `db` logiques (`REDIS_URL` avec `/0` pour le cache, `/1` pour BullMQ) ou deux instances si le volume le justifie.
 
 ## Client singleton
 
@@ -48,21 +48,21 @@ async function getCommunes() {
 }
 ```
 
-Invalidez explicitement (`redis.del(...)`) dans le même service qui fait le `create`/`update`/`delete` — ne comptez pas uniquement sur le TTL pour la cohérence des données de référence, un administrateur qui vient de corriger une commune doit voir le changement immédiatement.
+Invalidez explicitement (`redis.del(...)`) dans le même service qui fait le `create`/`update`/`delete` — ne comptez pas uniquement sur le TTL pour la cohérence des données de référence : un administrateur qui vient de corriger une commune doit voir le changement immédiatement.
 
 ## Ce qu'il ne faut JAMAIS mettre en cache
 
-**Le compteur `IdentifiantSequence.dernier_numero` ne doit jamais transiter par Redis comme source de décision.** Voir [[iucec-identifiant-service]] : l'incrément est un `UPDATE ... increment` atomique en base, seule garantie contre la génération de deux identifiants identiques par deux instances Express concurrentes. Un cache Redis introduirait une fenêtre de désynchronisation. Le seul usage Redis toléré ici est un cache **en lecture seule et à courte durée** pour l'endpoint `/identifiant/statistiques` (affichage), jamais pour décider du prochain `numero_ordre`.
+**Le compteur `IdentifiantSequence.dernier_numero` ne doit jamais transiter par Redis comme source de décision.** Voir skill `iucec-identifiant-service` : l'incrément est un `UPDATE ... increment` atomique en base, seule garantie contre la génération de deux identifiants identiques par deux instances Express concurrentes. Un cache Redis introduirait une fenêtre de désynchronisation. Le seul usage Redis toléré ici est un cache **en lecture seule et à courte durée** pour l'endpoint `/api/v1/identifiants/statistiques` (affichage), jamais pour décider du prochain `numero_ordre`.
 
 Ne cachez pas non plus les `Acte` individuels : ils sont mutables fréquemment (workflow de statut, validation), la fraîcheur prime sur la performance de lecture pour cette ressource. Cachez plutôt les objets qui en dépendent peu et changent rarement (listes de référence, statistiques agrégées).
 
 ## Files d'attente BullMQ
 
-Le traitement synchrone actuel (import CSV ligne par ligne dans le handler) bloque la requête et échoue par timeout sur de gros volumes. Dans le nouveau backend, ces traitements deviennent des jobs :
+Le traitement synchrone legacy (import CSV ligne par ligne dans le handler `legacy:src/pages/api/admin/actes/import.ts`) bloque la requête et échoue par timeout sur de gros volumes. Dans le nouveau backend, ces traitements deviennent des jobs :
 
 | Queue | Déclenché par | Détail |
 |---|---|---|
-| `csv-import` | `POST /admin/actes/import` | le endpoint répond immédiatement avec un `jobId`, le résultat (comptes importés/échecs par ligne) est consultable via `GET /jobs/:jobId` |
+| `csv-import` | `POST /api/v1/admin/actes/import` | le endpoint répond immédiatement avec un `jobId`, le résultat (comptes importés/échecs par ligne) est consultable via `GET /api/v1/jobs/:jobId` |
 | `image-processing` | upload d'acte, génération de miniature | découplé de la requête d'upload si le volume par lot est important (jusqu'à 300 fichiers aujourd'hui, `MAX_FILES`) |
 
 ```ts
@@ -71,8 +71,8 @@ import { Queue } from 'bullmq';
 export const csvImportQueue = new Queue('csv-import', { connection: redisConnection });
 ```
 
-Chaque worker vit dans `src/jobs/*.worker.ts`, tourne dans le même process au démarrage ou dans un process dédié selon la charge — décidez au moment de l'implémentation selon le volume réel constaté, ne sur-architecturez pas dès le départ un déploiement multi-process s'il n'y a pas encore de charge mesurée.
+Chaque worker vit dans `src/jobs/*.worker.ts`, tourne dans le même process au démarrage ou dans un process dédié selon la charge — décidez au moment de l'implémentation selon le volume réel constaté, ne sur-architecturez pas dès le départ un déploiement multi-process s'il n'y a pas encore de charge mesurée. Les jobs journalisent leurs actions métier dans l'audit comme les services (voir skill `auth-rbac-security`).
 
 ## Endpoint de statut de job
 
-Prévoir `GET /jobs/:id` (ou namespacé par ressource, ex. `GET /admin/actes/import/:jobId`) qui interroge l'état BullMQ (`waiting | active | completed | failed`) — c'est le remplacement direct de la réponse synchrone `{ importedCount, failedCount, errors }` que l'endpoint actuel renvoie tout de suite ; avec une file d'attente, cette même forme de réponse devient le résultat consultable après coup, pas la réponse HTTP immédiate.
+Prévoir `GET /api/v1/jobs/:id` (ou namespacé par ressource, ex. `GET /api/v1/admin/actes/import/:jobId`) qui interroge l'état BullMQ (`waiting | active | completed | failed`) — c'est le remplacement direct de la réponse synchrone `{ importedCount, failedCount, errors }` que l'endpoint legacy renvoie tout de suite ; avec une file d'attente, cette même forme de réponse devient le résultat consultable après coup, pas la réponse HTTP immédiate.
